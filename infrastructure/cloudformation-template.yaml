@@ -1,0 +1,295 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Legacy .NET Application Migration Workshop Infrastructure'
+
+Parameters:
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for instance access
+  
+  Region:
+    Type: String
+    Default: us-east-1
+    AllowedValues: [us-east-1, us-west-1]
+    Description: AWS Region for deployment
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      WindowsAMI: ami-0c02fb55956c7d316
+      LinuxAMI: ami-0abcdef1234567890
+    us-west-1:
+      WindowsAMI: ami-0d70546e43a941d70
+      LinuxAMI: ami-0abcdef1234567890
+
+Resources:
+  # VPC and Networking
+  WorkshopVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: DotNetMigrationWorkshop-VPC
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkshopVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkshopVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkshopVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-2
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Workshop-IGW
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref WorkshopVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: Workshop-NAT
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WorkshopVPC
+      Tags:
+        - Key: Name
+          Value: Public-RT
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WorkshopVPC
+      Tags:
+        - Key: Name
+          Value: Private-RT
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Security Groups
+  WindowsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Windows .NET application server
+      VpcId: !Ref WorkshopVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: Windows-SG
+
+  MySQLSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for MySQL database server
+      VpcId: !Ref WorkshopVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref WindowsSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref WindowsSecurityGroup
+      Tags:
+        - Key: Name
+          Value: MySQL-SG
+
+  # IAM Role for EC2 instances
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: EC2-Workshop-Role
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  # Windows Server for .NET Application
+  WindowsServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref Region, WindowsAMI]
+      InstanceType: t3.medium
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref WindowsSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          <powershell>
+          # Install IIS and .NET Framework
+          Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole, IIS-WebServer, IIS-CommonHttpFeatures, IIS-HttpErrors, IIS-HttpLogging, IIS-RequestFiltering, IIS-StaticContent, IIS-DefaultDocument, IIS-DirectoryBrowsing, IIS-ASPNET45 -All
+          
+          # Download and install .NET Framework 4.8
+          $url = "https://download.microsoft.com/download/6/E/4/6E48E8AB-DC00-419E-9704-06DD46E5F81D/NDP48-x86-x64-AllOS-ENU.exe"
+          $output = "C:\temp\NDP48-x86-x64-AllOS-ENU.exe"
+          New-Item -ItemType Directory -Force -Path C:\temp
+          Invoke-WebRequest -Uri $url -OutFile $output
+          Start-Process -FilePath $output -ArgumentList "/quiet" -Wait
+          
+          # Clone application from GitHub
+          git clone https://github.com/vinaykuchibhotla/dotnet-migration-workshop.git C:\inetpub\wwwroot\ProductCatalog
+          
+          # Configure IIS application
+          Import-Module WebAdministration
+          New-WebApplication -Site "Default Web Site" -Name "ProductCatalog" -PhysicalPath "C:\inetpub\wwwroot\ProductCatalog\src\ProductCatalog"
+          
+          # Restart IIS
+          iisreset
+          </powershell>
+      Tags:
+        - Key: Name
+          Value: Windows-DotNet-Server
+
+  # Linux Server for MySQL
+  MySQLServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref Region, LinuxAMI]
+      InstanceType: t3.medium
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref MySQLSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y mysql-server git
+          
+          # Start MySQL service
+          systemctl start mysqld
+          systemctl enable mysqld
+          
+          # Set root password and create database
+          mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'WorkshopPassword123!';"
+          mysql -u root -pWorkshopPassword123! -e "CREATE DATABASE ProductCatalog;"
+          mysql -u root -pWorkshopPassword123! -e "CREATE USER 'appuser'@'%' IDENTIFIED BY 'AppPassword123!';"
+          mysql -u root -pWorkshopPassword123! -e "GRANT ALL PRIVILEGES ON ProductCatalog.* TO 'appuser'@'%';"
+          mysql -u root -pWorkshopPassword123! -e "FLUSH PRIVILEGES;"
+          
+          # Clone repository and load sample data
+          git clone https://github.com/vinaykuchibhotla/dotnet-migration-workshop.git /tmp/workshop
+          mysql -u root -pWorkshopPassword123! ProductCatalog < /tmp/workshop/database/schema.sql
+          mysql -u root -pWorkshopPassword123! ProductCatalog < /tmp/workshop/database/sample-data.sql
+      Tags:
+        - Key: Name
+          Value: MySQL-Database-Server
+
+Outputs:
+  WindowsServerPrivateIP:
+    Description: Private IP of Windows Server
+    Value: !GetAtt WindowsServer.PrivateIp
+    Export:
+      Name: !Sub "${AWS::StackName}-WindowsServerPrivateIP"
+
+  MySQLServerPrivateIP:
+    Description: Private IP of MySQL Server
+    Value: !GetAtt MySQLServer.PrivateIp
+    Export:
+      Name: !Sub "${AWS::StackName}-MySQLServerPrivateIP"
+
+  VPCId:
+    Description: VPC ID
+    Value: !Ref WorkshopVPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VPCId"
