@@ -1,0 +1,40 @@
+{
+  "rules": [
+    {
+      "rule-type": "selection",
+      "rule-id": "1",
+      "rule-name": "include-products-table",
+      "object-locator": {
+        "schema-name": "ProductCatalog",
+        "table-name": "Products"
+      },
+      "rule-action": "include"
+    },
+    {
+      "rule-type": "selection",
+      "rule-id": "2",
+      "rule-name": "include-audit-table",
+      "object-locator": {
+        "schema-name": "ProductCatalog",
+        "table-name": "ProductAudit"
+      },
+      "rule-action": "include"
+    },
+    {
+      "rule-type": "transformation",
+      "rule-id": "3",
+      "rule-name": "add-column-metadata",
+      "rule-target": "column",
+      "object-locator": {
+        "schema-name": "ProductCatalog",
+        "table-name": "Products"
+      },
+      "rule-action": "add-column",
+      "value": "MigratedAt",
+      "expression": "CURRENT_TIMESTAMP",
+      "data-type": {
+        "type": "datetime"
+      }
+    }
+  ]
+}
